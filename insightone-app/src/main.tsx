@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import {
+  createHashHistory,
   createRouter,
   RouterProvider,
 } from "@tanstack/react-router";
@@ -9,6 +10,7 @@ import "./index.css";
 
 const router = createRouter({
   routeTree,
+  history: createHashHistory(),
   defaultPreload: "intent",
   scrollRestoration: true,
 });
