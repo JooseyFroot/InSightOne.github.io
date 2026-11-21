@@ -9,7 +9,6 @@ import { onAuthStateChanged, signOut } from "firebase/auth";
 import type { User } from "firebase/auth";
 import {
   BookOpen,
-  BrainCircuit,
   CheckCircle2,
   FileText,
   LayoutDashboard,
@@ -416,11 +415,11 @@ function Workspace({ user }: { user: User }) {
           to="/"
           className="flex items-center gap-3 text-xl font-extrabold"
         >
-          <span className="rounded-xl bg-gradient-brand p-2">
-            <BrainCircuit className="size-6" />
-          </span>
-
-          InsightONE
+          <img
+  src={`${import.meta.env.BASE_URL}insightone-logo.png`}
+  alt="InsightONE"
+  className="h-14 w-14 shrink-0 rounded-lg bg-white object-contain p-1"
+/>
         </Link>
 
         <div className="mt-6 border-t border-white/15 pt-5">
