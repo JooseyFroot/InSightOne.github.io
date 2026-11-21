@@ -1,12 +1,24 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
-import { createFileRoute, Link } from "@tanstack/react-router";
+import {
+  createFileRoute,
+  Link,
+  useNavigate,
+} from "@tanstack/react-router";
+import { FirebaseError } from "firebase/app";
+import {
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  updateProfile,
+} from "firebase/auth";
 import {
   ArrowLeft,
   ArrowRight,
   LockKeyhole,
   ShieldCheck,
 } from "lucide-react";
+
+import { auth } from "@/lib/firebase";
 import { Button } from "@/components/ui/button";
 import { SiteHeader } from "@/components/site/SiteHeader";
 import { SiteFooter } from "@/components/site/SiteFooter";
@@ -19,7 +31,9 @@ export const Route = createFileRoute("/auth")({
   }),
   head: () => ({
     meta: [
-      { title: "Sign in or create an account — InsightONE" },
+      {
+        title: "Sign in or create an account — InsightONE",
+      },
     ],
   }),
   component: AuthPage,
@@ -27,6 +41,14 @@ export const Route = createFileRoute("/auth")({
 
 type Mode = "login" | "signup";
 type FieldName = "name" | "email" | "password" | "confirm";
+
+type FormField = {
+  name: FieldName;
+  label: string;
+  type: string;
+  autoComplete: string;
+  placeholder?: string;
+};
 
 function AuthPage() {
   const { mode } = Route.useSearch();
@@ -37,30 +59,28 @@ function AuthPage() {
 function AuthForm({ mode }: { mode: Mode }) {
   const signup = mode === "signup";
 
+  const navigate = useNavigate();
   const [showPassword, setShowPassword] = useState(false);
+  const [pending, setPending] = useState(false);
   const [errors, setErrors] = useState<
     Partial<Record<FieldName, string>>
   >({});
   const [notice, setNotice] = useState("");
+  const [noticeIsError, setNoticeIsError] = useState(false);
 
-  const fields: {
-    name: FieldName;
-    label: string;
-    type: string;
-    autoComplete: string;
-    placeholder?: string;
-  }[] = [
-    ...(signup
-      ? [
-          {
-            name: "name" as const,
-            label: "Full name",
-            type: "text",
-            autoComplete: "name",
-            placeholder: "Your full name",
-          },
-        ]
-      : []),
+  const fields: FormField[] = [];
+
+  if (signup) {
+    fields.push({
+      name: "name",
+      label: "Full name",
+      type: "text",
+      autoComplete: "name",
+      placeholder: "Your full name",
+    });
+  }
+
+  fields.push(
     {
       name: "email",
       label: "Work email",
@@ -74,20 +94,21 @@ function AuthForm({ mode }: { mode: Mode }) {
       type: showPassword ? "text" : "password",
       autoComplete: signup ? "new-password" : "current-password",
     },
-    ...(signup
-      ? [
-          {
-            name: "confirm" as const,
-            label: "Confirm password",
-            type: showPassword ? "text" : "password",
-            autoComplete: "new-password",
-          },
-        ]
-      : []),
-  ];
+  );
 
-  function submit(event: FormEvent<HTMLFormElement>) {
+  if (signup) {
+    fields.push({
+      name: "confirm",
+      label: "Confirm password",
+      type: showPassword ? "text" : "password",
+      autoComplete: "new-password",
+    });
+  }
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+
+    if (pending) return;
 
     const form = event.currentTarget;
     const data = new FormData(form);
@@ -99,11 +120,14 @@ function AuthForm({ mode }: { mode: Mode }) {
 
     const next: Partial<Record<FieldName, string>> = {};
 
-    if (signup && name.length < 2) {
-      next.name = "Enter your full name (at least 2 characters).";
+    if (signup && (name.length < 2 || name.length > 100)) {
+      next.name = "Enter your full name using 2–100 characters.";
     }
 
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    if (
+      email.length > 254 ||
+      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+    ) {
       next.email = "Enter a valid email address.";
     }
 
@@ -119,6 +143,7 @@ function AuthForm({ mode }: { mode: Mode }) {
 
     setErrors(next);
     setNotice("");
+    setNoticeIsError(false);
 
     const firstError = Object.keys(next)[0];
 
@@ -132,9 +157,99 @@ function AuthForm({ mode }: { mode: Mode }) {
       return;
     }
 
-    setNotice(
-      "Your form is valid. Firebase is not connected yet, so no account has been created and you have not been signed in.",
-    );
+    setPending(true);
+
+    try {
+      if (signup) {
+        const credential = await createUserWithEmailAndPassword(
+          auth,
+          email,
+          password,
+        );
+
+        // Firebase signs the user in after creating the account.
+        // Saving their display name is a separate operation.
+        try {
+          await updateProfile(credential.user, {
+            displayName: name,
+          });
+
+          setNotice(
+            "Your account has been created. You are signed in.",
+          );
+        } catch {
+          setNotice(
+            "Your account has been created and you are signed in, but your display name could not be saved.",
+          );
+        }
+      } else {
+        await signInWithEmailAndPassword(auth, email, password);
+
+        setNotice("You have signed in successfully.");
+      }
+
+      form.reset();
+      await navigate({
+  to: "/workspace",
+  search: { view: "overview" },
+});
+      setShowPassword(false);
+    } catch (error) {
+      let message = "Something went wrong. Please try again.";
+
+      if (error instanceof FirebaseError) {
+        switch (error.code) {
+          case "auth/email-already-in-use":
+            message =
+              "Unable to create this account. Try signing in if you already have one.";
+            break;
+
+          case "auth/invalid-email":
+            message = "Enter a valid email address.";
+            break;
+
+          case "auth/weak-password":
+          case "auth/password-does-not-meet-requirements":
+            message =
+              "Your password does not meet the required password policy.";
+            break;
+
+          case "auth/invalid-credential":
+          case "auth/user-not-found":
+          case "auth/wrong-password":
+          case "auth/user-disabled":
+            message =
+              "Unable to sign in. Check your details or contact your administrator.";
+            break;
+
+          case "auth/too-many-requests":
+            message =
+              "Too many attempts. Please wait and try again.";
+            break;
+
+          case "auth/network-request-failed":
+            message =
+              "Check your internet connection and try again.";
+            break;
+
+          case "auth/operation-not-allowed":
+            message =
+              "Email/password sign-in is not enabled in Firebase yet.";
+            break;
+
+          case "auth/invalid-api-key":
+          case "auth/app-not-authorized":
+            message =
+              "Firebase configuration needs checking. Please contact the project administrator.";
+            break;
+        }
+      }
+
+      setNoticeIsError(true);
+      setNotice(message);
+    } finally {
+      setPending(false);
+    }
   }
 
   return (
@@ -175,7 +290,7 @@ function AuthForm({ mode }: { mode: Mode }) {
             </p>
 
             <div className="mt-8 flex items-center gap-3 text-sm">
-              <ShieldCheck className="size-5 text-primary" />
+              <ShieldCheck className="size-5 shrink-0 text-primary" />
               Built for a secure, role-based workspace
             </div>
           </section>
@@ -210,7 +325,9 @@ function AuthForm({ mode }: { mode: Mode }) {
                   key={value}
                   to="/auth"
                   search={{ mode: value }}
-                  aria-current={mode === value ? "page" : undefined}
+                  aria-current={
+                    mode === value ? "page" : undefined
+                  }
                   className={`rounded-lg px-4 py-2 text-center text-sm font-semibold ${
                     mode === value
                       ? "bg-card text-foreground shadow-card"
@@ -225,6 +342,7 @@ function AuthForm({ mode }: { mode: Mode }) {
             <form
               onSubmit={submit}
               noValidate
+              aria-busy={pending}
               className="mt-6 space-y-5"
             >
               {fields.map((field) => (
@@ -243,6 +361,7 @@ function AuthForm({ mode }: { mode: Mode }) {
                     autoComplete={field.autoComplete}
                     placeholder={field.placeholder}
                     required
+                    disabled={pending}
                     maxLength={
                       field.name === "name"
                         ? 100
@@ -250,7 +369,7 @@ function AuthForm({ mode }: { mode: Mode }) {
                           ? 254
                           : undefined
                     }
-                    className="form-input"
+                    className="form-input disabled:opacity-60"
                     aria-invalid={!!errors[field.name]}
                     aria-describedby={
                       errors[field.name]
@@ -285,6 +404,7 @@ function AuthForm({ mode }: { mode: Mode }) {
                 <input
                   type="checkbox"
                   checked={showPassword}
+                  disabled={pending}
                   onChange={(event) =>
                     setShowPassword(event.target.checked)
                   }
@@ -297,24 +417,29 @@ function AuthForm({ mode }: { mode: Mode }) {
                 type="submit"
                 size="xl"
                 className="w-full"
+                disabled={pending}
               >
-                {signup ? "Create account" : "Sign in"}
-                <ArrowRight />
+                {pending
+                  ? "Please wait…"
+                  : signup
+                    ? "Create account"
+                    : "Sign in"}
+
+                {!pending && <ArrowRight />}
               </Button>
 
               {notice && (
                 <p
-                  role="status"
-                  className="rounded-xl border border-border bg-secondary p-4 text-sm"
+                  role={noticeIsError ? "alert" : "status"}
+                  className={`rounded-xl border p-4 text-sm ${
+                    noticeIsError
+                      ? "border-red-200 bg-red-50 text-red-800"
+                      : "border-border bg-secondary text-foreground"
+                  }`}
                 >
                   {notice}
                 </p>
               )}
-
-              <p className="text-center text-xs text-muted-foreground">
-                Frontend preview · Firebase authentication
-                is not connected yet.
-              </p>
             </form>
           </section>
         </div>
